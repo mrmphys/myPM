@@ -93,7 +93,10 @@ export default function ChatInterface() {
   }
 
   const handleTranscript = (text: string) => {
-    sendMessage(text)
+    console.log('[chat] transcript received:', text)
+    if (text.trim()) {
+      sendMessage(text.trim())
+    }
   }
 
   return (

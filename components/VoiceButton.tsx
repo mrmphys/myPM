@@ -121,7 +121,17 @@ export default function VoiceButton({ onTranscript, disabled }: VoiceButtonProps
 
       mediaRecorder.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop())
-        const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
+
+        if (chunksRef.current.length === 0) {
+          console.warn('[voice] no audio chunks recorded')
+          setProcessing(false)
+          stoppingRef.current = false
+          return
+        }
+
+        const mimeType = mediaRecorder.mimeType || 'audio/webm'
+        const blob = new Blob(chunksRef.current, { type: mimeType })
+        console.log('[voice] blob size:', blob.size, 'mime:', mimeType)
         setProcessing(true)
 
         const formData = new FormData()
@@ -130,9 +140,14 @@ export default function VoiceButton({ onTranscript, disabled }: VoiceButtonProps
         try {
           const res = await fetch('/api/transcribe', { method: 'POST', body: formData })
           const data = await res.json()
-          if (data.transcript?.trim()) onTranscript(data.transcript.trim())
+          console.log('[voice] transcribe response:', data)
+          if (data.transcript?.trim()) {
+            onTranscript(data.transcript.trim())
+          } else {
+            console.warn('[voice] empty transcript', data)
+          }
         } catch (err) {
-          console.error('Transcription error:', err)
+          console.error('[voice] transcription error:', err)
         } finally {
           setProcessing(false)
           stoppingRef.current = false

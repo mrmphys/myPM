@@ -7,26 +7,34 @@ export async function POST(request: Request) {
   }
 
   const buffer = Buffer.from(await audio.arrayBuffer())
+  console.log('[transcribe] audio size:', buffer.length, 'type:', audio.type)
+
+  // Try webm first, fallback to generic
+  const mimeType = audio.type || 'audio/webm'
 
   const res = await fetch(
-    'https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true',
+    'https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true&language=en',
     {
       method: 'POST',
       headers: {
         Authorization: `Token ${process.env.DEEPGRAM_API_KEY}`,
-        'Content-Type': 'audio/webm',
+        'Content-Type': mimeType,
       },
       body: buffer,
     }
   )
 
+  const data = await res.json()
+  console.log('[transcribe] deepgram response:', JSON.stringify(data).slice(0, 300))
+
   if (!res.ok) {
-    return Response.json({ error: 'Transcription failed' }, { status: 500 })
+    console.error('[transcribe] deepgram error:', data)
+    return Response.json({ error: 'Transcription failed', detail: data }, { status: 500 })
   }
 
-  const data = await res.json()
   const transcript =
     data?.results?.channels?.[0]?.alternatives?.[0]?.transcript ?? ''
 
+  console.log('[transcribe] transcript:', transcript)
   return Response.json({ transcript })
 }
