@@ -7,55 +7,102 @@ interface VoiceButtonProps {
   disabled?: boolean
 }
 
-const SILENCE_THRESHOLD = 5       // RMS level below this = silence (lower = less sensitive)
-const SILENCE_DURATION_MS = 2000  // stop after 2s of silence
-const MIN_RECORD_MS = 2000        // don't stop before 2s minimum
+const SILENCE_THRESHOLD = 5      // RMS below this = silence
+const SILENCE_DURATION_MS = 1500 // send after 1.5s of silence
+const MIN_RECORD_MS = 300        // minimum chunk before we check silence
 
 export default function VoiceButton({ onTranscript, disabled }: VoiceButtonProps) {
-  const [recording, setRecording] = useState(false)
+  const [active, setActive] = useState(false)       // mic is on
+  const [speaking, setSpeaking] = useState(false)   // currently speaking
   const [processing, setProcessing] = useState(false)
   const [volume, setVolume] = useState(0)
 
+  const activeRef = useRef(false)
+  const streamRef = useRef<MediaStream | null>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
   const audioContextRef = useRef<AudioContext | null>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const rafRef = useRef<number | null>(null)
-  const startTimeRef = useRef<number>(0)
-  const stoppingRef = useRef(false)
+  const chunkStartRef = useRef<number>(0)
 
   useEffect(() => {
-    return () => {
-      cleanup()
-    }
+    return () => stopAll()
   }, [])
 
-  const cleanup = () => {
+  const stopAll = () => {
+    activeRef.current = false
     if (rafRef.current) cancelAnimationFrame(rafRef.current)
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current)
-    if (audioContextRef.current) audioContextRef.current.close()
-    audioContextRef.current = null
-    analyserRef.current = null
-  }
-
-  const stopRecording = () => {
-    if (stoppingRef.current) return
-    stoppingRef.current = true
-
-    if (rafRef.current) cancelAnimationFrame(rafRef.current)
-    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current)
-    if (audioContextRef.current) {
-      audioContextRef.current.close()
-      audioContextRef.current = null
-    }
-
-    setRecording(false)
-    setVolume(0)
-
+    if (audioContextRef.current) { audioContextRef.current.close(); audioContextRef.current = null }
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop()
     }
+    if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null }
+    setActive(false)
+    setSpeaking(false)
+    setVolume(0)
+  }
+
+  const sendChunk = async (blob: Blob) => {
+    if (blob.size < 1000) return // too small, skip
+
+    setProcessing(true)
+    const formData = new FormData()
+    formData.append('audio', blob, 'chunk.webm')
+
+    try {
+      const res = await fetch('/api/transcribe', { method: 'POST', body: formData })
+      const data = await res.json()
+      console.log('[voice] transcript:', data.transcript)
+      if (data.transcript?.trim()) {
+        onTranscript(data.transcript.trim())
+      }
+    } catch (err) {
+      console.error('[voice] transcribe error:', err)
+    } finally {
+      setProcessing(false)
+    }
+  }
+
+  const startNewChunk = (stream: MediaStream) => {
+    if (!activeRef.current) return
+
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : 'audio/webm'
+
+    const recorder = new MediaRecorder(stream, { mimeType })
+    mediaRecorderRef.current = recorder
+    chunksRef.current = []
+    chunkStartRef.current = Date.now()
+
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) chunksRef.current.push(e.data)
+    }
+
+    recorder.onstop = () => {
+      if (!activeRef.current) return
+      const blob = new Blob(chunksRef.current, { type: mimeType })
+      sendChunk(blob)
+      // immediately start next chunk
+      startNewChunk(stream)
+    }
+
+    recorder.start()
+  }
+
+  const onSilenceDetected = () => {
+    if (!activeRef.current) return
+    const elapsed = Date.now() - chunkStartRef.current
+    if (elapsed < MIN_RECORD_MS) return
+
+    // stop current recorder — onstop will send chunk and start new one
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop()
+    }
+    setSpeaking(false)
   }
 
   const monitorAudio = (stream: MediaStream) => {
@@ -71,33 +118,31 @@ export default function VoiceButton({ onTranscript, disabled }: VoiceButtonProps
     const data = new Uint8Array(analyser.frequencyBinCount)
 
     const tick = () => {
-      if (!analyserRef.current) return
+      if (!activeRef.current || !analyserRef.current) return
 
       analyser.getByteTimeDomainData(data)
-
-      // calculate RMS volume
       let sum = 0
       for (let i = 0; i < data.length; i++) {
-        const val = (data[i] - 128) / 128
-        sum += val * val
+        const v = (data[i] - 128) / 128
+        sum += v * v
       }
       const rms = Math.sqrt(sum / data.length) * 100
       setVolume(Math.min(rms, 100))
 
-      const elapsed = Date.now() - startTimeRef.current
+      const elapsed = Date.now() - chunkStartRef.current
 
-      if (elapsed > MIN_RECORD_MS) {
-        if (rms < SILENCE_THRESHOLD) {
-          if (!silenceTimerRef.current) {
-            silenceTimerRef.current = setTimeout(() => {
-              stopRecording()
-            }, SILENCE_DURATION_MS)
-          }
-        } else {
-          if (silenceTimerRef.current) {
-            clearTimeout(silenceTimerRef.current)
+      if (rms > SILENCE_THRESHOLD) {
+        setSpeaking(true)
+        if (silenceTimerRef.current) {
+          clearTimeout(silenceTimerRef.current)
+          silenceTimerRef.current = null
+        }
+      } else if (elapsed > MIN_RECORD_MS) {
+        if (!silenceTimerRef.current) {
+          silenceTimerRef.current = setTimeout(() => {
             silenceTimerRef.current = null
-          }
+            onSilenceDetected()
+          }, SILENCE_DURATION_MS)
         }
       }
 
@@ -107,100 +152,52 @@ export default function VoiceButton({ onTranscript, disabled }: VoiceButtonProps
     rafRef.current = requestAnimationFrame(tick)
   }
 
-  const startRecording = async () => {
+  const startListening = async () => {
     try {
-      stoppingRef.current = false
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      const mediaRecorder = new MediaRecorder(stream)
-      mediaRecorderRef.current = mediaRecorder
-      chunksRef.current = []
+      streamRef.current = stream
+      activeRef.current = true
+      setActive(true)
 
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data)
-      }
-
-      mediaRecorder.onstop = async () => {
-        stream.getTracks().forEach((t) => t.stop())
-
-        if (chunksRef.current.length === 0) {
-          console.warn('[voice] no audio chunks recorded')
-          setProcessing(false)
-          stoppingRef.current = false
-          return
-        }
-
-        const mimeType = mediaRecorder.mimeType || 'audio/webm'
-        const blob = new Blob(chunksRef.current, { type: mimeType })
-        console.log('[voice] blob size:', blob.size, 'mime:', mimeType)
-        setProcessing(true)
-
-        const formData = new FormData()
-        formData.append('audio', blob, 'recording.webm')
-
-        try {
-          const res = await fetch('/api/transcribe', { method: 'POST', body: formData })
-          const data = await res.json()
-          console.log('[voice] transcribe response:', data)
-          if (data.transcript?.trim()) {
-            onTranscript(data.transcript.trim())
-          } else {
-            console.warn('[voice] empty transcript', data)
-          }
-        } catch (err) {
-          console.error('[voice] transcription error:', err)
-        } finally {
-          setProcessing(false)
-          stoppingRef.current = false
-        }
-      }
-
-      startTimeRef.current = Date.now()
-      mediaRecorder.start()
-      setRecording(true)
       monitorAudio(stream)
+      startNewChunk(stream)
     } catch (err) {
-      console.error('Mic error:', err)
+      console.error('[voice] mic error:', err)
       alert('Microphone access denied. Please allow mic access in your browser.')
     }
   }
 
   const handleClick = () => {
-    if (disabled || processing) return
-    if (recording) {
-      stopRecording()
+    if (disabled) return
+    if (active) {
+      stopAll()
     } else {
-      startRecording()
+      startListening()
     }
   }
 
-  // volume bar height for visual feedback
   const barHeight = Math.min(Math.max(volume * 1.5, 2), 20)
 
   return (
     <button
       onClick={handleClick}
-      disabled={disabled || processing}
+      disabled={disabled}
       className={`relative p-3 rounded-full transition-all select-none ${
-        recording
-          ? 'bg-red-500 hover:bg-red-600'
-          : processing
-          ? 'bg-gray-600 cursor-wait'
+        active
+          ? speaking
+            ? 'bg-red-500 hover:bg-red-600'
+            : 'bg-orange-500 hover:bg-orange-600'
           : 'bg-gray-700 hover:bg-gray-600'
       } disabled:opacity-50`}
-      title={recording ? 'Click to cancel' : 'Click to speak'}
+      title={active ? 'Click to stop' : 'Click to start voice'}
     >
-      {processing ? (
-        <svg className="w-5 h-5 text-white animate-spin" fill="none" viewBox="0 0 24 24">
-          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
-        </svg>
-      ) : recording ? (
+      {active ? (
         <div className="flex items-end justify-center gap-0.5 w-5 h-5">
           {[0.6, 1, 0.7, 1, 0.5].map((mul, i) => (
             <div
               key={i}
               className="w-1 bg-white rounded-full transition-all duration-75"
-              style={{ height: `${Math.max(barHeight * mul, 2)}px` }}
+              style={{ height: `${Math.max(speaking ? barHeight * mul : 2, 2)}px` }}
             />
           ))}
         </div>
