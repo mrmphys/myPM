@@ -167,7 +167,7 @@ export default function ChatInterface() {
             </svg>
           </button>
         </div>
-        <p className="text-gray-600 text-xs mt-2 text-center">Hold mic to speak · Enter to send · Shift+Enter for newline</p>
+        <p className="text-gray-600 text-xs mt-2 text-center">Click mic to start/stop recording · Enter to send · Shift+Enter for newline</p>
       </div>
     </div>
   )

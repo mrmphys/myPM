@@ -34,8 +34,8 @@ export default function VoiceButton({ onTranscript, disabled }: VoiceButtonProps
 
         try {
           const res = await fetch('/api/transcribe', { method: 'POST', body: formData })
-          const { transcript } = await res.json()
-          if (transcript) onTranscript(transcript)
+          const data = await res.json()
+          if (data.transcript) onTranscript(data.transcript)
         } catch (err) {
           console.error('Transcription error:', err)
         } finally {
@@ -47,23 +47,29 @@ export default function VoiceButton({ onTranscript, disabled }: VoiceButtonProps
       setRecording(true)
     } catch (err) {
       console.error('Mic error:', err)
+      alert('Microphone access denied. Please allow mic access in your browser and try again.')
     }
   }
 
   const stopRecording = () => {
-    mediaRecorderRef.current?.stop()
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop()
+    }
     setRecording(false)
   }
 
-  const handleMouseDown = () => { if (!disabled && !processing) startRecording() }
-  const handleMouseUp = () => { if (recording) stopRecording() }
+  const handleClick = () => {
+    if (disabled || processing) return
+    if (recording) {
+      stopRecording()
+    } else {
+      startRecording()
+    }
+  }
 
   return (
     <button
-      onMouseDown={handleMouseDown}
-      onMouseUp={handleMouseUp}
-      onTouchStart={handleMouseDown}
-      onTouchEnd={handleMouseUp}
+      onClick={handleClick}
       disabled={disabled || processing}
       className={`p-3 rounded-full transition-all select-none ${
         recording
@@ -72,12 +78,16 @@ export default function VoiceButton({ onTranscript, disabled }: VoiceButtonProps
           ? 'bg-gray-600 cursor-wait'
           : 'bg-gray-700 hover:bg-gray-600'
       } disabled:opacity-50`}
-      title={recording ? 'Release to send' : 'Hold to speak'}
+      title={recording ? 'Click to stop' : 'Click to speak'}
     >
       {processing ? (
         <svg className="w-5 h-5 text-white animate-spin" fill="none" viewBox="0 0 24 24">
           <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
           <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+        </svg>
+      ) : recording ? (
+        <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 24 24">
+          <rect x="6" y="6" width="12" height="12" rx="2" />
         </svg>
       ) : (
         <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 24 24">
