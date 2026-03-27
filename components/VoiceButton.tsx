@@ -7,9 +7,9 @@ interface VoiceButtonProps {
   disabled?: boolean
 }
 
-const SILENCE_THRESHOLD = 10      // RMS level below this = silence
-const SILENCE_DURATION_MS = 1500  // stop after 1.5s of silence
-const MIN_RECORD_MS = 500         // don't stop before 500ms (avoid instant cut)
+const SILENCE_THRESHOLD = 5       // RMS level below this = silence (lower = less sensitive)
+const SILENCE_DURATION_MS = 2000  // stop after 2s of silence
+const MIN_RECORD_MS = 2000        // don't stop before 2s minimum
 
 export default function VoiceButton({ onTranscript, disabled }: VoiceButtonProps) {
   const [recording, setRecording] = useState(false)
