@@ -6,7 +6,7 @@ export async function POST(request: Request) {
   const { messages } = await request.json()
 
   const stream = await client.messages.create({
-    model: 'claude-3-5-sonnet-20241022',
+    model: 'claude-sonnet-4-5',
     max_tokens: 1024,
     system:
       'You are myPM, an AI project manager. You help users plan, track, and execute their projects. Be concise, direct, and actionable.',
